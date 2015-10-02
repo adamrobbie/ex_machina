@@ -78,7 +78,7 @@ defmodule ExMachina.EctoTest do
     factory :article do
       %MyApp.Article{
         title: "My Awesome Article",
-        author_id: assoc(:author, factory: :user).id
+        author: assoc(:author, factory: :user)
       }
     end
 
@@ -133,14 +133,14 @@ defmodule ExMachina.EctoTest do
     refute_received {:created, _}
   end
 
-  test "assoc/3 creates and returns a factory if one was not in attrs" do
+  test "assoc/3 builds and returns a factory if one was not in attrs" do
     attrs = %{}
 
     user = ExMachina.Ecto.assoc(MyApp.EctoFactories, attrs, :user)
 
-    newly_created_user = %MyApp.User{id: 1, name: "John Doe", admin: false}
+    newly_created_user = %MyApp.User{id: nil, name: "John Doe", admin: false}
     assert user == newly_created_user
-    assert_received {:created, ^newly_created_user}
+    refute_received {:created, _}
   end
 
   test "assoc/3 can specify a factory for the association" do
@@ -148,9 +148,9 @@ defmodule ExMachina.EctoTest do
 
     account = ExMachina.Ecto.assoc(MyApp.EctoFactories, attrs, :account, factory: :user)
 
-    newly_created_account = %MyApp.User{id: 1, name: "John Doe", admin: false}
+    newly_created_account = %MyApp.User{id: nil, name: "John Doe", admin: false}
     assert account == newly_created_account
-    assert_received {:created, ^newly_created_account}
+    refute_received {:created, _}
   end
 
   test "can use assoc/3 in a factory to override associations" do
@@ -159,5 +159,16 @@ defmodule ExMachina.EctoTest do
     comment = MyApp.EctoFactories.create(:comment, article: my_article)
 
     assert comment.article == my_article
+  end
+
+  test "create/1 saves built associations" do
+    author = MyApp.EctoFactories.build(:user)
+    record = MyApp.EctoFactories.create(%MyApp.Article{title: "Ecto is Awesome", author: author})
+
+    created_article = %MyApp.Article{id: 1, title: "Ecto is Awesome", author: author, author_id: 1}
+    assert record.author_id == 1
+    assert_received {:created, ^created_article}
+    assert_received {:created, saved_author = %MyApp.User{}}
+    assert saved_author.id
   end
 end

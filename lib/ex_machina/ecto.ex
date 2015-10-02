@@ -9,6 +9,19 @@ defmodule ExMachina.Ecto do
 
         @repo unquote(repo)
 
+        def create(built_record = %{__struct__: struct}) when is_map(built_record) do
+          associations = struct.__schema__(:associations)
+
+          Enum.reduce(associations, built_record, fn(association_name, record) ->
+            case Map.get(record, association_name) do
+              association = %{__meta__: %{state: :built}} ->
+                association_id = "#{association_name}_id" |> String.to_atom
+                Map.put(record, association_id, create(association).id)
+              _ -> record
+            end
+          end) |> save_record
+        end
+
         def fields_for(factory_name, attrs \\ %{}) do
           ExMachina.Ecto.fields_for(__MODULE__, factory_name, attrs)
         end
@@ -73,7 +86,7 @@ defmodule ExMachina.Ecto do
   end
 
   @doc """
-  Gets a factory from the passed in attrs, or creates if none is present
+  Gets a factory from the passed in attrs, or builds one if none is present
 
   ## Examples
 
@@ -82,25 +95,25 @@ defmodule ExMachina.Ecto do
       assoc(:user)
 
       attrs = %{}
-      # Creates and returns new instance based on :user factory
+      # Builds and returns new instance based on :user factory
       assoc(:user)
 
       attrs = %{}
-      # Creates and returns new instance based on :user factory
+      # Builds and returns new instance based on :user factory
       assoc(:author, factory: :user)
   """
   def assoc(module, attrs, factory_name, opts \\ []) do
     case Map.get(attrs, factory_name) do
-      nil -> create_assoc(module, factory_name, opts)
+      nil -> build_assoc(module, factory_name, opts)
       record -> record
     end
   end
 
-  defp create_assoc(module, _factory_name, factory: factory_name) do
-    module.create(factory_name)
+  defp build_assoc(module, _factory_name, factory: factory_name) do
+    module.build(factory_name)
   end
-  defp create_assoc(module, factory_name, _opts) do
-    module.create(factory_name)
+  defp build_assoc(module, factory_name, _opts) do
+    module.build(factory_name)
   end
 
   @doc """
