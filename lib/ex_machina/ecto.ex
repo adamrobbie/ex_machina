@@ -1,182 +1,357 @@
 defmodule ExMachina.Ecto do
+  @moduledoc """
+  Module for building and inserting factories with Ecto
+
+  This module works much like the regular `ExMachina` module, but adds a few
+  nice things that make working with Ecto easier.
+
+  * It uses `ExMachina.EctoStrategy`, which adds `insert/1`, `insert/2`,
+    `insert_pair/2`, `insert_list/3`.
+  * Adds a `params_for` function that is useful for working with changesets or
+    sending params to API endpoints.
+
+  More in-depth examples are in the [README](readme.html).
+  """
   defmacro __using__(opts) do
-    verify_ecto_dep
+    verify_ecto_dep()
+
     if repo = Keyword.get(opts, :repo) do
       quote do
         use ExMachina
+        use ExMachina.EctoStrategy, repo: unquote(repo)
 
-        @repo unquote(repo)
-
-        def fields_for(factory_name, attrs \\ %{}) do
-          ExMachina.Ecto.fields_for(__MODULE__, factory_name, attrs)
+        def params_for(factory_name, attrs \\ %{}) do
+          ExMachina.Ecto.params_for(__MODULE__, factory_name, attrs)
         end
 
-        def save_record(record) do
-          ExMachina.Ecto.save_record(__MODULE__, @repo, record)
+        def string_params_for(factory_name, attrs \\ %{}) do
+          ExMachina.Ecto.string_params_for(__MODULE__, factory_name, attrs)
         end
 
-        defp assoc(attrs, factory_name, opts \\ []) do
-          ExMachina.Ecto.assoc(__MODULE__, attrs, factory_name, opts)
+        def params_with_assocs(factory_name, attrs \\ %{}) do
+          ExMachina.Ecto.params_with_assocs(__MODULE__, factory_name, attrs)
+        end
+
+        def string_params_with_assocs(factory_name, attrs \\ %{}) do
+          ExMachina.Ecto.string_params_with_assocs(__MODULE__, factory_name, attrs)
         end
       end
     else
       raise ArgumentError,
-        """
-        expected :repo to be given as an option. Example:
+            """
+            expected :repo to be given as an option. Example:
 
-        use ExMachina.Ecto, repo: MyApp.Repo
-        """
+            use ExMachina.Ecto, repo: MyApp.Repo
+            """
     end
   end
 
   defp verify_ecto_dep do
     unless Code.ensure_loaded?(Ecto) do
       raise "You tried to use ExMachina.Ecto, but the Ecto module is not loaded. " <>
-        "Please add ecto to your dependencies."
+              "Please add ecto to your dependencies."
     end
   end
 
   @doc """
-  Builds a factory with the passed in factory_name and returns its fields
+  Builds a factory and inserts it into the database.
+
+  The arguments are the same as `c:ExMachina.build/2`.
+  """
+  @callback insert(factory_name :: atom) :: any
+  @callback insert(factory_name :: atom, attrs :: keyword | map) :: any
+
+  @doc """
+  Builds two factories and inserts them into the database.
+
+  The arguments are the same as `c:ExMachina.build_pair/2`.
+  """
+  @callback insert_pair(factory_name :: atom) :: list
+  @callback insert_pair(factory_name :: atom, attrs :: keyword | map) :: list
+
+  @doc """
+  Builds many factories and inserts them into the database.
+
+  The arguments are the same as `c:ExMachina.build_list/3`.
+  """
+  @callback insert_list(number_of_records :: integer, factory_name :: atom) :: list
+  @callback insert_list(
+              number_of_records :: integer,
+              factory_name :: atom,
+              attrs :: keyword | map
+            ) :: list
+
+  @doc """
+  Builds a factory and returns only its fields.
 
   This is only for use with Ecto models.
 
   Will return a map with the fields and virtual fields, but without the Ecto
-  metadata and associations.
+  metadata, the primary key, or any `belongs_to` associations. This will
+  recursively act on `has_one` associations and Ecto structs found in
+  `has_many` associations.
+
+  If you want `belongs_to` associations to be inserted, use
+  `c:params_with_assocs/2`.
+
+  If you want params with string keys use `c:string_params_for/2`.
 
   ## Example
 
-      def factory(:user, _attrs) do
+      def user_factory do
         %MyApp.User{name: "John Doe", admin: false}
       end
 
       # Returns %{name: "John Doe", admin: true}
-      fields_for(:user, admin: true)
-  """
-  def fields_for(module, factory_name, attrs \\ %{}) do
-    module.build(factory_name, attrs)
-    |> drop_ecto_fields
-  end
+      params_for(:user, admin: true)
 
-  defp drop_ecto_fields(record = %{__struct__: struct, __meta__: %{__struct__: Ecto.Schema.Metadata}}) do
-    record
-    |> Map.from_struct
-    |> Map.delete(:__meta__)
-    |> Map.drop(struct.__schema__(:associations))
-  end
-  defp drop_ecto_fields(record) do
-    raise ArgumentError, "#{inspect record} is not an Ecto model. Use `build` instead."
+      # Returns %{name: "John Doe", admin: false}
+      params_for(:user)
+  """
+  @callback params_for(factory_name :: atom) :: %{optional(atom) => any}
+  @callback params_for(factory_name :: atom, attrs :: keyword | map) :: %{optional(atom) => any}
+
+  @doc false
+  def params_for(module, factory_name, attrs \\ %{}) do
+    factory_name
+    |> module.build(attrs)
+    |> recursively_strip
   end
 
   @doc """
-  Gets a factory from the passed in attrs, or builds if none is present
+  Similar to `c:params_for/2` but converts atom keys to strings in returned map.
 
-  ## Examples
+  The result of this function can be safely used in controller tests for Phoenix
+  web applications.
 
-      attrs = %{user: %{name: "Someone"}}
-      # Returns attrs.user
-      assoc(attrs, :user)
+  ## Example
 
-      attrs = %{}
-      # Builds and returns new instance based on :user factory
-      assoc(attrs, :user)
-
-      attrs = %{}
-      # Builds and returns new instance based on :user factory
-      assoc(attrs, :author, factory: :user)
-  """
-  def assoc(module, attrs, factory_name, opts \\ []) do
-    case Map.get(attrs, factory_name) do
-      nil -> build_assoc(module, factory_name, opts)
-      record -> record
-    end
-  end
-
-  defp build_assoc(module, _factory_name, factory: factory_name) do
-    ExMachina.build(module, factory_name)
-  end
-  defp build_assoc(module, factory_name, _opts) do
-    ExMachina.build(module, factory_name)
-  end
-
-  defp get_assocs(%{__struct__: struct}) do
-    for a <- struct.__schema__(:associations) do
-      {a, struct.__schema__(:association, a)}
-    end
-  end
-
-  defp belongs_to_assocs(model) do
-    for {a, %{__struct__: Ecto.Association.BelongsTo}} <- get_assocs(model), do: a
-  end
-
-  defp not_loaded_assocs(model) do
-    for {a, %{__struct__: Ecto.Association.Has}} <- get_assocs(model),
-      !Ecto.Association.loaded?(Map.get(model, a)),
-      do: a
-  end
-
-  defp restore_belongs_to_associations(target, source) do
-    target
-      |> belongs_to_assocs
-      |> Enum.reduce(target, fn(a, target) -> Map.put(target, a, Map.get(source, a)) end)
-  end
-
-  defp convert_to_changes(record) do
-    record
-    |> Map.from_struct
-    |> Map.delete(:__meta__)
-    # drop fields for `belongs_to` assocs as they cannot be handled by changeset
-    |> Map.drop(belongs_to_assocs(record))
-    |> Map.drop(not_loaded_assocs(record))
-  end
-
-  @doc """
-  Saves a record and all associated records using `Repo.insert!`
-
-  Before inserting, changes are wrapped in a changeset. This means that
-  has_many, has_one, embeds_one, and embeds_many associations will be saved
-  correctly. Any belongs_to associations will also be saved.
-
-      # Will save the article and list of comments
-      create(:article, comments: [build(:comment)])
-
-  """
-  def save_record(module, repo, %{__struct__: model, __meta__: %{__struct__: Ecto.Schema.Metadata}} = record) do
-    record = record |> persist_belongs_to_associations(module)
-    changes = record |> convert_to_changes
-
-    struct(model)
-    |> Ecto.Changeset.change(changes)
-    |> repo.insert!
-    |> restore_belongs_to_associations(record)
-  end
-  def save_record(_, _ , record) do
-    raise ArgumentError, "#{inspect record} is not an Ecto model. Use `build` instead"
-  end
-
-  defp persist_belongs_to_associations(built_record, module) do
-    association_names = belongs_to_assocs(built_record)
-
-    Enum.reduce association_names, built_record, fn(association_name, record) ->
-      case association = Map.get(record, association_name) do
-        %{__meta__: %{state: :built}} ->
-          association = ExMachina.create(module, association)
-          put_assoc(record, association_name, association)
-        %{__meta__: %{state: :loaded}} ->
-          put_assoc(record, association_name, association)
-        %{__struct__: Ecto.Association.NotLoaded} -> record
-        _ ->
-          raise ArgumentError,
-            "expected #{inspect(association_name)} to be an Ecto struct but got #{inspect(association)}"
+      def user_factory do
+        %MyApp.User{name: "John Doe", admin: false}
       end
+
+      # Returns %{"name" => "John Doe", "admin" => true}
+      string_params_for(:user, admin: true)
+  """
+  @callback string_params_for(factory_name :: atom) :: %{optional(String.t()) => any}
+  @callback string_params_for(factory_name :: atom, attrs :: keyword | map) :: %{
+              optional(String.t()) => any
+            }
+
+  @doc false
+  def string_params_for(module, factory_name, attrs \\ %{}) do
+    module
+    |> params_for(factory_name, attrs)
+    |> convert_atom_keys_to_strings
+  end
+
+  @doc """
+  Similar to `c:params_for/2` but inserts all `belongs_to` associations and
+  sets the foreign keys.
+
+  If you want params with string keys use `c:string_params_with_assocs/2`.
+
+  ## Example
+
+      def article_factory do
+        %MyApp.Article{title: "An Awesome Article", author: build(:author)}
+      end
+
+      # Inserts an author and returns %{title: "An Awesome Article", author_id: 12}
+      params_with_assocs(:article)
+  """
+  @callback params_with_assocs(factory_name :: atom) :: %{optional(atom) => any}
+  @callback params_with_assocs(factory_name :: atom, attrs :: keyword | map) :: %{
+              optional(atom) => any
+            }
+
+  @doc false
+  def params_with_assocs(module, factory_name, attrs \\ %{}) do
+    factory_name
+    |> module.build(attrs)
+    |> insert_belongs_to_assocs(module)
+    |> recursively_strip
+  end
+
+  @doc """
+  Similar to `c:params_with_assocs/2` but converts atom keys to strings in
+  returned map.
+
+  The result of this function can be safely used in controller tests for Phoenix
+  web applications.
+
+  ## Example
+
+      def article_factory do
+        %MyApp.Article{title: "An Awesome Article", author: build(:author)}
+      end
+
+      # Inserts an author and returns %{"title" => "An Awesome Article", "author_id" => 12}
+      string_params_with_assocs(:article)
+  """
+  @callback string_params_with_assocs(factory_name :: atom) :: %{optional(String.t()) => any}
+  @callback string_params_with_assocs(factory_name :: atom, attrs :: keyword | map) :: %{
+              optional(String.t()) => any
+            }
+
+  @doc false
+  def string_params_with_assocs(module, factory_name, attrs \\ %{}) do
+    module
+    |> params_with_assocs(factory_name, attrs)
+    |> convert_atom_keys_to_strings
+  end
+
+  defp recursively_strip(record = %{__struct__: _}) do
+    record
+    |> set_persisted_belongs_to_ids
+    |> handle_assocs
+    |> handle_embeds
+    |> drop_ecto_fields
+    |> drop_fields_with_nil_values
+  end
+
+  defp recursively_strip(record), do: record
+
+  defp handle_assocs(record = %{__struct__: struct}) do
+    Enum.reduce(struct.__schema__(:associations), record, fn association_name, record ->
+      case struct.__schema__(:association, association_name) do
+        %{__struct__: Ecto.Association.BelongsTo} ->
+          Map.delete(record, association_name)
+
+        _ ->
+          record
+          |> Map.get(association_name)
+          |> handle_assoc(record, association_name)
+      end
+    end)
+  end
+
+  defp handle_assoc(original_assoc, record, association_name) do
+    case original_assoc do
+      %{__meta__: %{__struct__: Ecto.Schema.Metadata, state: :built}} ->
+        assoc = recursively_strip(original_assoc)
+        Map.put(record, association_name, assoc)
+
+      nil ->
+        Map.put(record, association_name, nil)
+
+      list when is_list(list) ->
+        has_many_assoc = Enum.map(original_assoc, &recursively_strip/1)
+        Map.put(record, association_name, has_many_assoc)
+
+      %{__struct__: Ecto.Association.NotLoaded} ->
+        Map.delete(record, association_name)
     end
   end
 
-  defp put_assoc(record, association_name, association) do
-    association_id = "#{association_name}_id" |> String.to_atom
-
-    record
-    |> Map.put(association_id, association.id)
-    |> Map.put(association_name, association)
+  defp handle_embeds(record = %{__struct__: struct}) do
+    Enum.reduce(struct.__schema__(:embeds), record, fn embed_name, record ->
+      record
+      |> Map.get(embed_name)
+      |> handle_embed(record, embed_name)
+    end)
   end
+
+  defp handle_embed(original_embed, record, embed_name) do
+    case original_embed do
+      %{} ->
+        embed = recursively_strip(original_embed)
+        Map.put(record, embed_name, embed)
+
+      list when is_list(list) ->
+        embeds_many = Enum.map(original_embed, &recursively_strip/1)
+        Map.put(record, embed_name, embeds_many)
+
+      nil ->
+        Map.delete(record, embed_name)
+    end
+  end
+
+  defp set_persisted_belongs_to_ids(record = %{__struct__: struct}) do
+    Enum.reduce(struct.__schema__(:associations), record, fn association_name, record ->
+      association = struct.__schema__(:association, association_name)
+
+      case association do
+        %{__struct__: Ecto.Association.BelongsTo} ->
+          case Map.get(record, association_name) do
+            belongs_to = %{__meta__: %{__struct__: Ecto.Schema.Metadata, state: :loaded}} ->
+              set_belongs_to_primary_key(record, belongs_to, association)
+
+            _ ->
+              record
+          end
+
+        _ ->
+          record
+      end
+    end)
+  end
+
+  defp set_belongs_to_primary_key(record, belongs_to, association) do
+    primary_key = Map.get(belongs_to, association.related_key)
+    Map.put(record, association.owner_key, primary_key)
+  end
+
+  defp insert_belongs_to_assocs(record = %{__struct__: struct}, module) do
+    Enum.reduce(struct.__schema__(:associations), record, fn association_name, record ->
+      case struct.__schema__(:association, association_name) do
+        association = %{__struct__: Ecto.Association.BelongsTo} ->
+          insert_built_belongs_to_assoc(module, association, record)
+
+        _ ->
+          record
+      end
+    end)
+  end
+
+  defp insert_built_belongs_to_assoc(module, association, record) do
+    case Map.get(record, association.field) do
+      built_relation = %{__meta__: %{state: :built}} ->
+        relation = module.insert(built_relation)
+        set_belongs_to_primary_key(record, relation, association)
+
+      _ ->
+        Map.delete(record, association.owner_key)
+    end
+  end
+
+  @doc false
+  def drop_ecto_fields(record = %{__struct__: struct}) do
+    record
+    |> Map.from_struct()
+    |> Map.delete(:__meta__)
+    |> drop_autogenerated_ids(struct)
+  end
+
+  def drop_ecto_fields(embedded_record), do: embedded_record
+
+  defp drop_autogenerated_ids(map, struct) do
+    case struct.__schema__(:autogenerate_id) do
+      {name, _source, _type} -> Map.delete(map, name)
+      {name, _type} -> Map.delete(map, name)
+      nil -> map
+    end
+  end
+
+  defp drop_fields_with_nil_values(map) do
+    map
+    |> Enum.reject(fn {_, value} -> value == nil end)
+    |> Enum.into(%{})
+  end
+
+  defp convert_atom_keys_to_strings(values) when is_list(values) do
+    Enum.map(values, &convert_atom_keys_to_strings/1)
+  end
+
+  defp convert_atom_keys_to_strings(%{__struct__: _} = record) when is_map(record) do
+    Map.from_struct(record) |> convert_atom_keys_to_strings()
+  end
+
+  defp convert_atom_keys_to_strings(record) when is_map(record) do
+    Enum.reduce(record, Map.new(), fn {key, value}, acc ->
+      Map.put(acc, to_string(key), convert_atom_keys_to_strings(value))
+    end)
+  end
+
+  defp convert_atom_keys_to_strings(value), do: value
 end
